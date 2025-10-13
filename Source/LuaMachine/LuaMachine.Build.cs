@@ -99,3 +99,49 @@ public class LuaMachine : ModuleRules
 
     }
 }
+
+
+/*
+if (VMType == LuaVMType.LuaJIT)
+{
+    PublicDefinitions.Add("LUAMACHINE_LUAJIT=1");
+    if (Target.Platform == UnrealTargetPlatform.Win64)
+    {
+        string ThirdParty = System.IO.Path.Combine(ModuleDirectory, "..", "ThirdParty");
+        string ThirdPartyX64 = System.IO.Path.Combine(ThirdParty, "x64");
+
+        // Accept either file name (your lib is named luajit_win64.lib)
+        string LibA = System.IO.Path.Combine(ThirdPartyX64, "luajit_win64.lib");
+        string LibB = System.IO.Path.Combine(ThirdPartyX64, "lua51.lib");
+        if (System.IO.File.Exists(LibA))
+            PublicAdditionalLibraries.Add(LibA);
+        else if (System.IO.File.Exists(LibB))
+            PublicAdditionalLibraries.Add(LibB);
+        else
+            throw new BuildException($"LuaJIT import lib not found: {LibA} or {LibB}");
+
+        // At runtime the MSVC LuaJIT build loads lua51.dll by default.
+        // Some setups rename it to luajit_win64.dll. Delay-load both to be safe.
+        PublicDelayLoadDLLs.Add("lua51.dll");
+        PublicDelayLoadDLLs.Add("luajit_win64.dll");
+
+        // Stage/copy the DLL(s) next to the built module automatically.
+        // We point BOTH target names at the same source file on disk so either name works.
+        string DllSource =
+            System.IO.File.Exists(System.IO.Path.Combine(ThirdPartyX64, "lua51.dll"))
+                ? System.IO.Path.Combine(ThirdPartyX64, "lua51.dll")
+                : System.IO.Path.Combine(ThirdPartyX64, "luajit_win64.dll");
+
+        if (!System.IO.File.Exists(DllSource))
+            throw new BuildException($"LuaJIT DLL not found in {ThirdPartyX64} (expected lua51.dll or luajit_win64.dll)");
+
+        // Copy to the output dir (Editor/Development, Game, etc.)
+        RuntimeDependencies.Add("$(TargetOutputDir)/lua51.dll",       DllSource);
+        RuntimeDependencies.Add("$(TargetOutputDir)/luajit_win64.dll", DllSource);
+    }
+}
+else
+{
+    PublicDefinitions.Add("LUAMACHINE_LUAJIT=0");
+}
+*/
