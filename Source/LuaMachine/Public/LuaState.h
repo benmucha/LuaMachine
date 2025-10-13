@@ -222,6 +222,8 @@ class LUAMACHINE_API ULuaState : public UObject
 	GENERATED_BODY()
 
 public:
+	bool MyPCall(int NArgs, FLuaValue& Value, int errFuncIdx, int NRet);
+	bool MyCall(int NArgs, FLuaValue& Value, int errFuncIdx, int NRet);
 	ULuaState();
 	~ULuaState();
 

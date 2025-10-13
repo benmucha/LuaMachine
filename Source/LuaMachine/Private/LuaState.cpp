@@ -20,6 +20,60 @@
 
 LUAMACHINE_API DEFINE_LOG_CATEGORY(LogLuaMachine);
 
+// My copy to have the err func for errs with stacktrace.
+bool ULuaState::MyPCall(int NArgs, FLuaValue & Value, int errFuncIdx, int NRet)
+{
+	// --- preflight: ensure we're calling a function ---
+	const int funcIndex = lua_gettop(L) - NArgs;
+	if (lua_type(L, funcIndex) != LUA_TFUNCTION)
+	{
+		const char* got = luaL_typename(L, funcIndex);
+		LastError = FString::Printf(
+			TEXT("Lua call target is not a function (got %s). "
+				 "This error occurs at the C++ call boundary, so no Lua stack is available. Put breakpoint here to see where it's called from CPP"),
+			ANSI_TO_TCHAR(got));
+		return false;
+	}
+	// ---------------------------------------------------
+	
+	bool bSuccess = MyCall(NArgs, Value, NRet, errFuncIdx);
+	if (!bSuccess)
+	{
+		if (InceptionLevel > 0)
+		{
+			InceptionErrors.Enqueue(LastError);
+		}
+		else
+		{
+			if (bLogError)
+				LogError(LastError);
+			ReceiveLuaError(LastError);
+		}
+	}
+	return bSuccess;
+}
+
+/** I copied and changed to add err logs with stacktrace. Actually works e.g. if there's an error in WogenFirst.lua. */
+bool ULuaState::MyCall(int NArgs, FLuaValue& Value, int errFuncIdx, int NRet)
+{
+	if (lua_pcall(L, NArgs, NRet, errFuncIdx) != LUA_OK)
+	{
+		const char* err = lua_tostring(L, -1);
+		LastError = FString::Printf(TEXT("MyLuaStateCallErr: %s"),
+									ANSI_TO_TCHAR(err ? err : "(nil)"));
+		lua_pop(L, 1); // pop error message (already a traceback)
+		return false;
+	}
+	// remove error handler
+	lua_remove(L, errFuncIdx);
+
+	if (NRet > 0)
+	{
+		Value = ToLuaValue(-1);
+	}
+	return true;
+}
+
 ULuaState::ULuaState()
 {
 	L = nullptr;

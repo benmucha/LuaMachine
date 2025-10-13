@@ -36,7 +36,27 @@ class LUAMACHINE_API ULuaBlueprintFunctionLibrary : public UBlueprintFunctionLib
 	GENERATED_BODY()
 
 public:
+	static FLuaValue LuaGetGlobalMy(ULuaState* L, const FString& Name);
+	static FLuaValue LuaRunNonContentFileMy(ULuaState* L, const FString& Filename, bool bIgnoreNonExistent);
+	static bool LuaValueFromJsonMy(ULuaState* L, const FString& Json, FLuaValue& LuaValue);
 	UFUNCTION(BlueprintCallable, BlueprintPure, Category="Lua")
+
+	// static int Traceback(lua_State* L)
+	// {
+	// 	const char* msg = lua_tostring(L, 1);
+	// 	if (!msg) { // non-string error object
+	// 		if (luaL_callmeta(L, 1, "__tostring") && lua_isstring(L, -1)) {
+	// 			msg = lua_tostring(L, -1);
+	// 		} else {
+	// 			msg = "(error object is not a string)";
+	// 		}
+	// 	}
+	// 	luaL_traceback(L, L, msg, 1);
+	// 	return 1;
+	// }
+
+
+	
 	static FLuaValue LuaCreateNil();
 
 	UFUNCTION(BlueprintCallable, BlueprintPure, Category="Lua")

@@ -32,6 +32,48 @@
 #include "Engine/BlueprintGeneratedClass.h"
 #endif
 
+FLuaValue ULuaBlueprintFunctionLibrary::LuaGetGlobalMy(ULuaState* L, const FString& Name)
+{
+	uint32 ItemsToPop = L->GetFieldFromTree(Name);
+	FLuaValue ReturnValue = L->ToLuaValue(-1);
+	L->Pop(ItemsToPop);
+	return ReturnValue;
+}
+
+FLuaValue ULuaBlueprintFunctionLibrary::LuaRunNonContentFileMy(ULuaState* L, const FString& Filename, const bool bIgnoreNonExistent)
+{
+	FLuaValue ReturnValue;
+	if (!L->RunFile(Filename, bIgnoreNonExistent, 1, true))
+	{
+		if (L->bLogError)
+			L->LogError(L->LastError);
+		L->ReceiveLuaError(L->LastError);
+	}
+	else
+	{
+		ReturnValue = L->ToLuaValue(-1);
+	}
+
+	L->Pop();
+	return ReturnValue;
+}
+
+bool ULuaBlueprintFunctionLibrary::LuaValueFromJsonMy(ULuaState* L, const FString& Json, FLuaValue& LuaValue)
+{
+	// default to nil
+	LuaValue = FLuaValue();
+
+	TSharedPtr<FJsonValue> JsonValue;
+	TSharedRef< TJsonReader<TCHAR> > JsonReader = TJsonReaderFactory<TCHAR>::Create(Json);
+	if (!FJsonSerializer::Deserialize(JsonReader, JsonValue))
+	{
+		return false;
+	}
+
+	LuaValue = FLuaValue::FromJsonValue(L, *JsonValue);
+	return true;
+}
+
 FLuaValue ULuaBlueprintFunctionLibrary::LuaCreateNil()
 {
 	return FLuaValue();
@@ -1050,23 +1092,37 @@ void ULuaBlueprintFunctionLibrary::LuaSetGlobal(UObject* WorldContextObject, TSu
 FLuaValue ULuaBlueprintFunctionLibrary::LuaGlobalCall(UObject* WorldContextObject, TSubclassOf<ULuaState> State, const FString& Name, TArray<FLuaValue> Args)
 {
 	FLuaValue ReturnValue;
-	ULuaState* L = FLuaMachineModule::Get().GetLuaState(State, WorldContextObject->GetWorld());
-	if (!L)
+	ULuaState* S = FLuaMachineModule::Get().GetLuaState(State, WorldContextObject->GetWorld());
+	if (!S)
 		return ReturnValue;
 
-	int32 ItemsToPop = L->GetFieldFromTree(Name);
+	// Start from _G
+	const int32 ItemsToPop = S->GetFieldFromTree(Name, /*bGlobal=*/true);
 
+	auto L = S->GetInternalLuaState();
+	// --- NEW: verify callable on top before pushing args ---
+	// If you have no accessor to raw lua_State*, add a tiny helper on ULuaState:
+	//    int TypeAt(int idx) { return lua_type(L, idx); }
+	//    const char* Typename(int idx) { return luaL_typename(L, idx); }
+	if (lua_type(L, -1) != LUA_TFUNCTION) {
+		const char* tn = luaL_typename(L, -1);
+		UE_LOG(LogLuaMachine, Error, TEXT("LuaGlobalCall('%s'): resolved to %s (not function)"),
+			   *Name, UTF8_TO_TCHAR(tn ? tn : "unknown"));
+		S->Pop(ItemsToPop);
+		return ReturnValue;
+	}
+	
 	int NArgs = 0;
 	for (FLuaValue& Arg : Args)
 	{
-		L->FromLuaValue(Arg);
+		S->FromLuaValue(Arg);
 		NArgs++;
 	}
 
-	L->PCall(NArgs, ReturnValue);
+	S->PCall(NArgs, ReturnValue);
 
 	// we have the return value and the function has been removed, so we do not need to change ItemsToPop
-	L->Pop(ItemsToPop);
+	S->Pop(ItemsToPop);
 
 	return ReturnValue;
 }
