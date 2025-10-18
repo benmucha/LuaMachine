@@ -12,6 +12,7 @@
 #include "AssetRegistryModule.h"
 #endif
 #include "GameFramework/Actor.h"
+#include "Logging/StructuredLog.h"
 #include "Runtime/Core/Public/Misc/FileHelper.h"
 #include "Runtime/Core/Public/Misc/Paths.h"
 #include "Runtime/Core/Public/Serialization/BufferArchive.h"
@@ -26,16 +27,24 @@ bool ULuaState::MyPCall(int NArgs, FLuaValue & Value, int errFuncIdx, int NRet)
 	const int funcIndex = lua_gettop(L) - NArgs;
 	if (lua_type(L, funcIndex) != LUA_TFUNCTION)
 	{
+		// pop (non-function) callee + args
+		lua_pop(L, 1 + NArgs);
+
+		// also remove the traceback handler we pushed earlier
+		if (errFuncIdx > 0 && errFuncIdx <= lua_gettop(L))
+			lua_remove(L, errFuncIdx);
+		
 		const char* got = luaL_typename(L, funcIndex);
 		LastError = FString::Printf(
 			TEXT("Lua call target is not a function (got %s). "
 				 "This error occurs at the C++ call boundary, so no Lua stack is available. Put breakpoint here to see where it's called from CPP"),
 			ANSI_TO_TCHAR(got));
+		UE_LOGFMT(LogTemp, Error, "%s", LastError);
 		return false;
 	}
 	// ---------------------------------------------------
 	
-	bool bSuccess = MyCall(NArgs, Value, NRet, errFuncIdx);
+	bool bSuccess = MyCall(NArgs, Value, errFuncIdx, NRet);
 	if (!bSuccess)
 	{
 		if (InceptionLevel > 0)
@@ -60,11 +69,20 @@ bool ULuaState::MyCall(int NArgs, FLuaValue& Value, int errFuncIdx, int NRet)
 		const char* err = lua_tostring(L, -1);
 		LastError = FString::Printf(TEXT("MyLuaStateCallErr: %s"),
 									ANSI_TO_TCHAR(err ? err : "(nil)"));
-		lua_pop(L, 1); // pop error message (already a traceback)
+		UE_LOGFMT(LogTemp, Error, "%s", LastError);
+		
+		// --- cleanup on error ---
+		lua_pop(L, 1); // pop error object produced by traceback
+		if (errFuncIdx > 0 && errFuncIdx <= lua_gettop(L))
+			lua_remove(L, errFuncIdx); // remove our handler
+		// ------------------------
+		
 		return false;
 	}
-	// remove error handler
-	lua_remove(L, errFuncIdx);
+	
+	// success: remove handler before reading returns
+	if (errFuncIdx > 0 && errFuncIdx <= lua_gettop(L))
+		lua_remove(L, errFuncIdx);
 
 	if (NRet > 0)
 	{
