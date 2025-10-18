@@ -39,7 +39,7 @@ bool ULuaState::MyPCall(int NArgs, FLuaValue & Value, int errFuncIdx, int NRet)
 			TEXT("Lua call target is not a function (got %s). "
 				 "This error occurs at the C++ call boundary, so no Lua stack is available. Put breakpoint here to see where it's called from CPP"),
 			ANSI_TO_TCHAR(got));
-		UE_LOGFMT(LogTemp, Error, "%s", LastError);
+		UE_LOGFMT(LogTemp, Error, "{err}", LastError);
 		return false;
 	}
 	// ---------------------------------------------------
@@ -69,7 +69,7 @@ bool ULuaState::MyCall(int NArgs, FLuaValue& Value, int errFuncIdx, int NRet)
 		const char* err = lua_tostring(L, -1);
 		LastError = FString::Printf(TEXT("MyLuaStateCallErr: %s"),
 									ANSI_TO_TCHAR(err ? err : "(nil)"));
-		UE_LOGFMT(LogTemp, Error, "%s", LastError);
+		UE_LOGFMT(LogTemp, Error, "{err}", LastError);
 		
 		// --- cleanup on error ---
 		lua_pop(L, 1); // pop error object produced by traceback
