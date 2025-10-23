@@ -1326,7 +1326,11 @@ int ULuaState::MetaTableFunctionUserData__gc(lua_State* L)
 	FLuaUserData* UserData = (FLuaUserData*)lua_touserdata(L, 1);
 	if (!UserData->Context.IsValid())
 	{
-		LUAMACHINE_RETURN_ERROR(L, "invalid UObject for UserData %p", UserData);
+		// My edit: If the UObject was already GC'd by UE, that's fine — nothing to do.
+		// - Hm idk tho, i do NewLuaUserDataObject(ULuaEntity::StaticClass(), true);, so it's tracked in uproperty tarray. -- Ah well hopefully it's j not entity objs doing this, rn i have ULuaEntPathOption which isn't tracked, so hopefully from that.
+		UE_LOG(LogTemp, Log, TEXT("ULuaState MetaTableFunctionUserData__gc: invalid UObject for UserData"));
+		return 0;
+		// LUAMACHINE_RETURN_ERROR(L, "invalid UObject for UserData %p", UserData);
 	}
 
 	ULuaUserDataObject* LuaUserDataObject = Cast<ULuaUserDataObject>(UserData->Context.Get());
@@ -1337,7 +1341,8 @@ int ULuaState::MetaTableFunctionUserData__gc(lua_State* L)
 	}
 
 	lua_pushnil(L);
-	return 1;
+	// return 1;
+	return 0;
 }
 
 int ULuaState::MetaTableFunction__call(lua_State* L)
