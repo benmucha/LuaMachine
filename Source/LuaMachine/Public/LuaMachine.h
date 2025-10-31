@@ -50,6 +50,8 @@ public:
 
 	virtual bool Exec(UWorld* InWorld, const TCHAR* Cmd, FOutputDevice& Ar);
 
+	// TSet<TWeakObjectPtr<ULuaState>> MyLuaStates;
+	TSet<ULuaState*> MyLuaStates;
 private:
 #if ENGINE_MAJOR_VERSION >= 5 && ENGINE_MINOR_VERSION >= 4
 	TMap<TSubclassOf<ULuaState>, TObjectPtr<ULuaState>> LuaStates;

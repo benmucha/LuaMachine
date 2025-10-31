@@ -205,6 +205,14 @@ class SLuaMachineDebugger : public SCompoundWidget, public FGCObject
 			DetectedLuaStates.Add(MakeShared<FString>(State->GetClass()->GetName()));
 		}
 
+		for (auto State : FLuaMachineModule::Get().MyLuaStates)
+		{
+			// if (State.IsValid())
+			{
+				DetectedLuaStates.Add(MakeShared<FString>(State->GetClass()->GetName()));
+			}
+		}
+
 		if (LuaStatesComboBox.IsValid())
 		{
 			LuaStatesComboBox->RefreshOptions();
@@ -239,7 +247,7 @@ class SLuaMachineDebugger : public SCompoundWidget, public FGCObject
 		{
 			ULuaState* LuaState = *StatesIterator;
 #if ENGINE_MAJOR_VERSION > 4
-			if (LuaState->IsValidLowLevel() && !IsValid(LuaState))
+			if (LuaState->IsValidLowLevel() && IsValid(LuaState))
 #else
 			if (LuaState->IsValidLowLevel() && !LuaState->IsPendingKill())
 #endif
