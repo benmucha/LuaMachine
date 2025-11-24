@@ -31,7 +31,10 @@ enum class ELuaValueType : uint8
 	UObject,
 	Thread,
 	MulticastDelegate,
+	MyBinString,
 };
+static constexpr uint8 MY_FAST_SENTINEL = 0x01;
+static constexpr int MY_FAST_SENTINEL_LEN = 1;
 
 class ULuaState;
 
@@ -170,6 +173,9 @@ struct LUAMACHINE_API FLuaValue
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Lua")
 	FString String;
+
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Lua")
+	TArray<uint8> BinaryMy; // Only used when Type is MyBinString
 
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category="Lua")
 	UObject* Object;
