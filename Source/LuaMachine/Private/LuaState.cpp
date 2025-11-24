@@ -693,6 +693,12 @@ void ULuaState::FromLuaValue(FLuaValue& LuaValue, UObject* CallContext, lua_Stat
 			TArray<uint8> Bytes = LuaValue.ToBytes();
 			lua_pushlstring(State, (const char*)Bytes.GetData(), Bytes.Num());
 		}
+	break;
+		case ELuaValueType::MyBinString:
+		{
+			const TArray<uint8>& Bytes = LuaValue.BinaryMy;
+			lua_pushlstring(State, (const char*)Bytes.GetData(), Bytes.Num());
+		}
 		break;
 	case ELuaValueType::Table:
 		if (LuaValue.LuaRef == LUA_NOREF)
@@ -889,9 +895,25 @@ FLuaValue ULuaState::ToLuaValue(int Index, lua_State* State)
 	}
 	else if (lua_type(State, Index) == LUA_TSTRING)
 	{
-		size_t StringLength = 0;
-		const char* String = lua_tolstring(State, Index, &StringLength);
-		LuaValue = FLuaValue(String, StringLength);
+		size_t Len = 0;
+		const char* Data = lua_tolstring(State, Index, &Len);
+		if (Len > 1 && (uint8)Data[0] == MY_FAST_SENTINEL)
+		{
+			// Binary payload (sentinel + bytes)
+			const int32 PayloadLen = (int32)Len - MY_FAST_SENTINEL_LEN;
+
+			LuaValue.Type = ELuaValueType::MyBinString;
+			LuaValue.BinaryMy.SetNumUninitialized(PayloadLen);
+			FMemory::Memcpy(LuaValue.BinaryMy.GetData(), Data + MY_FAST_SENTINEL_LEN, PayloadLen);
+		}
+		else
+		{
+			// Normal text string -> existing FString-based ctor
+			LuaValue = FLuaValue(Data, Len);
+		}
+		// size_t StringLength = 0;
+		// const char* String = lua_tolstring(State, Index, &StringLength);
+		// LuaValue = FLuaValue(String, StringLength);
 	}
 	else if (lua_isinteger(State, Index))
 	{

@@ -130,6 +130,7 @@ FLuaValue::FLuaValue(const FLuaValue& SourceValue)
 	Integer = SourceValue.Integer;
 	Number = SourceValue.Number;
 	String = SourceValue.String;
+	BinaryMy = SourceValue.BinaryMy;
 	FunctionName = SourceValue.FunctionName;
 	MulticastScriptDelegate = SourceValue.MulticastScriptDelegate;
 
@@ -151,6 +152,7 @@ FLuaValue& FLuaValue::operator = (const FLuaValue& SourceValue)
 	Integer = SourceValue.Integer;
 	Number = SourceValue.Number;
 	String = SourceValue.String;
+	BinaryMy = SourceValue.BinaryMy;
 	FunctionName = SourceValue.FunctionName;
 	MulticastScriptDelegate = SourceValue.MulticastScriptDelegate;
 
