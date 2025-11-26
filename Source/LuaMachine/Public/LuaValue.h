@@ -33,6 +33,7 @@ enum class ELuaValueType : uint8
 	MulticastDelegate,
 	MyBinString,
 };
+// Sentinel prefix for my lua strings that are actually binary data. So all of my binary strings in lua are typical lua strings, but with this sentinel char prefixed. But in cpp, I store the raw unprefixed binary data as a bytes array in FLuaValue. This prefix is needed so if we read the string (from lua) in CPP, then we know if it has this prefix then it's my binary data, and otherwise it's a typical string. 
 static constexpr uint8 MY_FAST_SENTINEL = 0x01;
 static constexpr int MY_FAST_SENTINEL_LEN = 1;
 
