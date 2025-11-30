@@ -90,7 +90,7 @@ bool ULuauBlueprintFunctionLibrary::LuauAnalyze(const FString& Code, const FStri
 
 	return Results.Num() == 0;
 #else
-	UE_LOG(LogLuaMachine, Error, TEXT("The current Lua VM is not Luau, Analyzer cannot be used"));
+	//UE_LOG(LogLuaMachine, Error, TEXT("The current Lua VM is not Luau, Analyzer cannot be used"));
 	return false;
 #endif
 }
