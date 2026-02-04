@@ -30,6 +30,9 @@ Source/ThirdParty/*
 *.la
 *.a
 *.lib
+!Source/ThirdParty/x64/
+!Source/ThirdParty/x64/*.lib
+!Source/ThirdParty/x64/*.dll
 
 # Executables
 *.exe
