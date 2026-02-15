@@ -1229,6 +1229,7 @@ TArray<FLuaValue> ULuaBlueprintFunctionLibrary::LuaGlobalCallValueMulti(UObject*
 	return ReturnValue;
 }
 
+// DONT use this - use my custom funcs for err stacktraces.
 FLuaValue ULuaBlueprintFunctionLibrary::LuaValueCall(FLuaValue Value, TArray<FLuaValue> Args)
 {
 	ULuaState* L = Value.LuaState.Get();

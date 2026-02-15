@@ -2173,6 +2173,7 @@ void ULuaState::PushValue(int Index)
 	lua_pushvalue(L, Index);
 }
 
+// DONT use this - use my custom funcs for err stacktraces.
 bool ULuaState::PCall(int NArgs, FLuaValue& Value, int NRet)
 {
 	bool bSuccess = Call(NArgs, Value, NRet);
@@ -2191,7 +2192,7 @@ bool ULuaState::PCall(int NArgs, FLuaValue& Value, int NRet)
 	}
 	return bSuccess;
 }
-
+// DONT use this - use my custom funcs for err stacktraces.
 bool ULuaState::Call(int NArgs, FLuaValue& Value, int NRet)
 {
 	if (lua_pcall(L, NArgs, NRet, 0))
