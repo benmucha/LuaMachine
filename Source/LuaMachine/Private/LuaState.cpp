@@ -610,7 +610,10 @@ bool ULuaState::RunCode(const TArray<uint8>& Code, const FString& CodePath, int 
 	{
 		if (lua_pcall(L, 0, NRet, 0))
 		{
-			LastError = FString::Printf(TEXT("Lua execution error: %s"), ANSI_TO_TCHAR(lua_tostring(L, -1)));
+			LastError = FString::Printf(
+				TEXT("Lua execution error (this can be a module load-time Lua runtime error, not only file resolution): %s"),
+				ANSI_TO_TCHAR(lua_tostring(L, -1))
+			);
 			return false;
 		}
 	}
