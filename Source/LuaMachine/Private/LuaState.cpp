@@ -1495,10 +1495,14 @@ int ULuaState::MetaTableFunction__call(lua_State* L)
 		*LuaProp->ContainerPtrToValuePtr<FLuaValue>(Parameters) = LuaValue;
 	}
 
+	// GPT: Preserve/restore active lua thread so downstream logging can inspect resumed coroutine frames.
+	lua_State* PrevActiveLuaThreadState = LuaState->ActiveLuaThreadState;
+	LuaState->ActiveLuaThreadState = L;
 	LuaState->InceptionLevel++;
 	CallScope->ProcessEvent(LuaCallContext->Function.Get(), Parameters);
 	check(LuaState->InceptionLevel > 0);
 	LuaState->InceptionLevel--;
+	LuaState->ActiveLuaThreadState = PrevActiveLuaThreadState;
 
 	if (LuaState->InceptionLevel == 0)
 	{
@@ -1689,10 +1693,14 @@ int ULuaState::MetaTableFunction__rawcall(lua_State* L)
 		LuaState->ToProperty(Parameters, Prop, LuaState->ToLuaValue(StackPointer++, L), bPropertySet, 0);
 	}
 
+	// GPT: Preserve/restore active lua thread so downstream logging can inspect resumed coroutine frames.
+	lua_State* PrevActiveLuaThreadState = LuaState->ActiveLuaThreadState;
+	LuaState->ActiveLuaThreadState = L;
 	LuaState->InceptionLevel++;
 	CallScope->ProcessEvent(LuaCallContext->Function.Get(), Parameters);
 	check(LuaState->InceptionLevel > 0);
 	LuaState->InceptionLevel--;
+	LuaState->ActiveLuaThreadState = PrevActiveLuaThreadState;
 
 	if (LuaState->InceptionLevel == 0)
 	{
@@ -1801,10 +1809,14 @@ int ULuaState::MetaTableFunction__rawbroadcast(lua_State* L)
 		LuaState->ToProperty(Parameters, Prop, LuaState->ToLuaValue(StackPointer++, L), bPropertySet, 0);
 	}
 
+	// GPT: Preserve/restore active lua thread so downstream logging can inspect resumed coroutine frames.
+	lua_State* PrevActiveLuaThreadState = LuaState->ActiveLuaThreadState;
+	LuaState->ActiveLuaThreadState = L;
 	LuaState->InceptionLevel++;
 	LuaCallContext->MulticastScriptDelegate->ProcessMulticastDelegate<UObject>(Parameters);
 	check(LuaState->InceptionLevel > 0);
 	LuaState->InceptionLevel--;
+	LuaState->ActiveLuaThreadState = PrevActiveLuaThreadState;
 
 	if (LuaState->InceptionLevel == 0)
 	{
