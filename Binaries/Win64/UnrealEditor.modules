@@ -1,0 +1,8 @@
+{
+	"BuildId": "43139311",
+	"Modules": 
+	{
+		"LuaMachine": "UnrealEditor-LuaMachine.dll",
+		"LuaMachineEditor": "UnrealEditor-LuaMachineEditor.dll"
+	}
+}

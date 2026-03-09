@@ -56,6 +56,8 @@ SourceArt/**/*.tga
 
 # Binary Files
 Binaries/*
+!Binaries/Win64/
+!Binaries/Win64/lua51.dll
 Plugins/*/Binaries/*
 
 # Builds
