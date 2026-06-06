@@ -1411,7 +1411,7 @@ int ULuaState::MetaTableFunction__call(lua_State* L)
 	}
 
 	FScopeCycleCounterUObject ObjectScope(CallScope);
-	FScopeCycleCounterUObject FunctionScope(LuaCallContext->Function.Get());
+	// GPT: UObject::ProcessEvent already emits the UFunction timing event, so do not add a second same-name scope around Lua bindings.
 
 	void* Parameters = FMemory_Alloca(LuaCallContext->Function->ParmsSize);
 	FMemory::Memzero(Parameters, LuaCallContext->Function->ParmsSize);
@@ -1653,7 +1653,7 @@ int ULuaState::MetaTableFunction__rawcall(lua_State* L)
 	}
 
 	FScopeCycleCounterUObject ObjectScope(CallScope);
-	FScopeCycleCounterUObject FunctionScope(LuaCallContext->Function.Get());
+	// GPT: UObject::ProcessEvent already emits the UFunction timing event, so do not add a second same-name scope around raw Lua bindings.
 
 	void* Parameters = FMemory_Alloca(LuaCallContext->Function->ParmsSize);
 	FMemory::Memzero(Parameters, LuaCallContext->Function->ParmsSize);
