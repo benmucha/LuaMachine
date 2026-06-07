@@ -2674,11 +2674,13 @@ FLuaValue ULuaState::FromUProperty(void* Buffer, UProperty * Property, bool& bSu
 	{
 		FLuaValue NewLuaArray = CreateLuaTable();
 		FScriptSetHelper_InContainer Helper(SetProperty, Buffer, Index);
-		for (int32 SetIndex = 0; SetIndex < Helper.Num(); SetIndex++)
+		int32 LuaArrayIndex = 1;
+		for (FScriptSetHelper::FIterator It(Helper); It; ++It)
 		{
-			uint8* ArrayItemPtr = Helper.GetElementPtr(SetIndex);
+			uint8* ArrayItemPtr = Helper.GetElementPtr(It);
 			bool bArrayItemSuccess = false;
-			NewLuaArray.SetFieldByIndex(SetIndex + 1, FromProperty(ArrayItemPtr, SetProperty->ElementProp, bArrayItemSuccess, 0));
+			NewLuaArray.SetFieldByIndex(LuaArrayIndex, FromProperty(ArrayItemPtr, SetProperty->ElementProp, bArrayItemSuccess, 0));
+			LuaArrayIndex++;
 		}
 		return NewLuaArray;
 	}
@@ -2911,12 +2913,14 @@ void ULuaState::ToUProperty(void* Buffer, UProperty * Property, FLuaValue Value,
 		FScriptSetHelper_InContainer Helper(SetProperty, Buffer, Index);
 		TArray<FLuaValue> ArrayValues = ULuaBlueprintFunctionLibrary::LuaTableGetValues(Value);
 		Helper.EmptyElements(ArrayValues.Num());
-		for (int32 ArrayIndex = 0; ArrayIndex < Helper.Num(); ArrayIndex++)
+		for (int32 ArrayIndex = 0; ArrayIndex < ArrayValues.Num(); ArrayIndex++)
 		{
-			uint8* SetItemPtr = Helper.GetElementPtr(ArrayIndex);
+			const int32 NewIndex = Helper.AddDefaultValue_Invalid_NeedsRehash();
+			uint8* SetItemPtr = Helper.GetElementPtr(NewIndex);
 			bool bArrayItemSuccess = false;
 			ToProperty(SetItemPtr, SetProperty->ElementProp, ArrayValues[ArrayIndex], bArrayItemSuccess, 0);
 		}
+		Helper.Rehash();
 		return;
 	}
 
