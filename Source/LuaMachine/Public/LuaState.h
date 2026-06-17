@@ -520,7 +520,7 @@ public:
 	void SetUserDataMetaTable(FLuaValue MetaTable);
 
 	FORCEINLINE lua_State* GetInternalLuaState() const { return L; }
-	// GPT: Use currently executing Lua thread when available (e.g. coroutine.resume) so diagnostics can see caller frames.
+	// a: Use currently executing Lua thread when available (e.g. coroutine.resume) so diagnostics can see caller frames.
 	FORCEINLINE lua_State* GetActiveLuaThreadState() const { return ActiveLuaThreadState ? ActiveLuaThreadState : L; }
 
 	void PushRegistryTable();
@@ -649,7 +649,7 @@ public:
 
 protected:
 	lua_State* L;
-	// GPT: Temporarily set during Lua->UFunction dispatch; restored after ProcessEvent.
+	// a: Temporarily set during Lua->UFunction dispatch; restored after ProcessEvent.
 	lua_State* ActiveLuaThreadState = nullptr;
 	bool bDisabled;
 

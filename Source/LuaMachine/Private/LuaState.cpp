@@ -1411,7 +1411,7 @@ int ULuaState::MetaTableFunction__call(lua_State* L)
 	}
 
 	FScopeCycleCounterUObject ObjectScope(CallScope);
-	// GPT: UObject::ProcessEvent already emits the UFunction timing event, so do not add a second same-name scope around Lua bindings.
+	// a: UObject::ProcessEvent already emits the UFunction timing event, so do not add a second same-name scope around Lua bindings.
 
 	void* Parameters = FMemory_Alloca(LuaCallContext->Function->ParmsSize);
 	FMemory::Memzero(Parameters, LuaCallContext->Function->ParmsSize);
@@ -1495,7 +1495,7 @@ int ULuaState::MetaTableFunction__call(lua_State* L)
 		*LuaProp->ContainerPtrToValuePtr<FLuaValue>(Parameters) = LuaValue;
 	}
 
-	// GPT: Preserve/restore active lua thread so downstream logging can inspect resumed coroutine frames.
+	// a: Preserve/restore active lua thread so downstream logging can inspect resumed coroutine frames.
 	lua_State* PrevActiveLuaThreadState = LuaState->ActiveLuaThreadState;
 	LuaState->ActiveLuaThreadState = L;
 	LuaState->InceptionLevel++;
@@ -1653,7 +1653,7 @@ int ULuaState::MetaTableFunction__rawcall(lua_State* L)
 	}
 
 	FScopeCycleCounterUObject ObjectScope(CallScope);
-	// GPT: UObject::ProcessEvent already emits the UFunction timing event, so do not add a second same-name scope around raw Lua bindings.
+	// a: UObject::ProcessEvent already emits the UFunction timing event, so do not add a second same-name scope around raw Lua bindings.
 
 	void* Parameters = FMemory_Alloca(LuaCallContext->Function->ParmsSize);
 	FMemory::Memzero(Parameters, LuaCallContext->Function->ParmsSize);
@@ -1693,7 +1693,7 @@ int ULuaState::MetaTableFunction__rawcall(lua_State* L)
 		LuaState->ToProperty(Parameters, Prop, LuaState->ToLuaValue(StackPointer++, L), bPropertySet, 0);
 	}
 
-	// GPT: Preserve/restore active lua thread so downstream logging can inspect resumed coroutine frames.
+	// a: Preserve/restore active lua thread so downstream logging can inspect resumed coroutine frames.
 	lua_State* PrevActiveLuaThreadState = LuaState->ActiveLuaThreadState;
 	LuaState->ActiveLuaThreadState = L;
 	LuaState->InceptionLevel++;
@@ -1809,7 +1809,7 @@ int ULuaState::MetaTableFunction__rawbroadcast(lua_State* L)
 		LuaState->ToProperty(Parameters, Prop, LuaState->ToLuaValue(StackPointer++, L), bPropertySet, 0);
 	}
 
-	// GPT: Preserve/restore active lua thread so downstream logging can inspect resumed coroutine frames.
+	// a: Preserve/restore active lua thread so downstream logging can inspect resumed coroutine frames.
 	lua_State* PrevActiveLuaThreadState = LuaState->ActiveLuaThreadState;
 	LuaState->ActiveLuaThreadState = L;
 	LuaState->InceptionLevel++;
