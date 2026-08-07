@@ -1813,7 +1813,12 @@ int ULuaState::MetaTableFunction__rawbroadcast(lua_State* L)
 	lua_State* PrevActiveLuaThreadState = LuaState->ActiveLuaThreadState;
 	LuaState->ActiveLuaThreadState = L;
 	LuaState->InceptionLevel++;
+	// a: UE 5.8 renamed the supported multicast entry point; retain the old name for earlier engine branches.
+#if ENGINE_MAJOR_VERSION > 5 || (ENGINE_MAJOR_VERSION == 5 && ENGINE_MINOR_VERSION >= 8)
+	LuaCallContext->MulticastScriptDelegate->ProcessDelegate<UObject>(Parameters);
+#else
 	LuaCallContext->MulticastScriptDelegate->ProcessMulticastDelegate<UObject>(Parameters);
+#endif
 	check(LuaState->InceptionLevel > 0);
 	LuaState->InceptionLevel--;
 	LuaState->ActiveLuaThreadState = PrevActiveLuaThreadState;
