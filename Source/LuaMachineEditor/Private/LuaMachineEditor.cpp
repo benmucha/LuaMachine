@@ -29,7 +29,7 @@ FLuaMachineEditorModule::FLuaMachineEditorModule()
 
 void FLuaMachineEditorModule::StartupModule()
 {
-	FCoreDelegates::OnPostEngineInit.AddRaw(this, &FLuaMachineEditorModule::OnPostEngineInit);
+	FCoreDelegates::GetOnPostEngineInit().AddRaw(this, &FLuaMachineEditorModule::OnPostEngineInit);
 
 	// This code will execute after your module is loaded into memory; the exact timing is specified in the .uplugin file per-module
 
@@ -371,7 +371,7 @@ class SLuaMachineDebugger : public SCompoundWidget, public FGCObject
 		case ELuaValueType::Thread:
 			if (SelectedLuaState == Item->LuaTableValue.LuaState)
 			{
-				Value = "status: " + FindObject<UEnum>(nullptr, TEXT("/Script/LuaMachine.ELuaThreadStatus"), true)->GetNameStringByIndex((int32)SelectedLuaState->GetLuaThreadStatus(Item->LuaTableValue)) + ", stack top: " + FString::FromInt(SelectedLuaState->GetLuaThreadStackTop(Item->LuaTableValue));
+				Value = "status: " + FindObject<UEnum>(nullptr, TEXT("/Script/LuaMachine.ELuaThreadStatus"), EFindObjectFlags::ExactClass)->GetNameStringByIndex((int32)SelectedLuaState->GetLuaThreadStatus(Item->LuaTableValue)) + ", stack top: " + FString::FromInt(SelectedLuaState->GetLuaThreadStackTop(Item->LuaTableValue));
 			}
 			break;
 		default:
@@ -531,7 +531,7 @@ TSharedRef<SDockTab> FLuaMachineEditorModule::CreateLuaMachineDebugger(const FSp
 
 void FLuaMachineEditorModule::ShutdownModule()
 {
-	FCoreDelegates::OnPostEngineInit.RemoveAll(this);
+	FCoreDelegates::GetOnPostEngineInit().RemoveAll(this);
 
 	// Unregister all the asset types that we registered
 	if (FModuleManager::Get().IsModuleLoaded("AssetTools"))
