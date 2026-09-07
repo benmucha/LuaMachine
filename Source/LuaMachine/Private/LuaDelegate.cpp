@@ -18,6 +18,7 @@ void ULuaDelegate::SetupLuaDelegate(UFunction* InSignature, ULuaState* InLuaStat
 
 void ULuaDelegate::ProcessEvent(UFunction* Function, void* Parms)
 {
+	// a: TODO SERVER_THREAD_REVIEW: Owner checks do not transport engine-originated delegate parameters; audit each live server subscription and route it before accepting off-owner callbacks. See BlockGame AUTOMATION_CONTEXT/ServerThreadMigration.md.
 	if (!LuaState.IsValid())
 	{
 		return;

@@ -46,6 +46,7 @@ void FLuaCommandExecutor::GetExecHistory(TArray<FString>& Out)
 
 bool FLuaCommandExecutor::Exec(const TCHAR* Input)
 {
+	// a: TODO SERVER_THREAD_REVIEW: The stock console calls owned server Lua on GameThread and stays registered until shell destruction; route execution and handle explicit VM closure before claiming support. See BlockGame AUTOMATION_CONTEXT/ServerThreadMigration.md.
 	IConsoleManager::Get().AddConsoleHistoryEntry(*(GetName().ToString()), Input);
 
 	LuaState->RunString(Input, "");

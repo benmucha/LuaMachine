@@ -240,6 +240,7 @@ class SLuaMachineDebugger : public SCompoundWidget, public FGCObject
 
 	void RefreshDebugText()
 	{
+		// a: TODO SERVER_THREAD_REVIEW: Stock debugger inspection is not routed to an owned server VM and can hit CheckLuaOwnerThread; port inspect/GC/selected-state actions before treating this debugger as supported. See BlockGame AUTOMATION_CONTEXT/ServerThreadMigration.md.
 		DebugTextContext.Empty();
 		ReferencersTextContext.Empty();
 
