@@ -3835,6 +3835,7 @@ int luaL_getsubtable(lua_State * L, int i, const char* name) {
 	return 0;
 }
 
+// a: Leave exactly the module above the caller's original stack for both fresh and cached loads; the optional global must reference that module, not the registry's loaded-modules table.
 void luaL_requiref(lua_State * L, const char* modname, lua_CFunction openf, int glb)
 {
 	luaL_checkstack(L, 3, "not enough stack slots available");
@@ -3849,10 +3850,11 @@ void luaL_requiref(lua_State * L, const char* modname, lua_CFunction openf, int 
 		lua_pushvalue(L, -1);
 		lua_setfield(L, -3, modname);
 	}
-	else
-	{
-		lua_pop(L, 1);
-	}
+	// a: A cached module already occupies the required stack slot; discarding it would publish _LOADED as the global and underflow the caller's expected module pop.
+	// else
+	// {
+	// 	lua_pop(L, 1);
+	// }
 	if (glb)
 	{
 		lua_pushvalue(L, -1);
