@@ -3,6 +3,7 @@
 #include "LuaValue.h"
 #include "LuaState.h"
 #include "Misc/Base64.h"
+#include "UObject/StrongObjectPtr.h"
 
 FString FLuaValue::ToString() const
 {
@@ -85,31 +86,34 @@ bool FLuaValue::ToBool() const
 
 void FLuaValue::Unref()
 {
-	if (!LuaState.IsValid())
-	{
-		LuaRef = LUA_NOREF;
-		return;
-	}
-
 	if (Type == ELuaValueType::Table || Type == ELuaValueType::Function || Type == ELuaValueType::Thread)
 	{
 		if (LuaRef != LUA_NOREF)
 		{
-			// special case for when the engine is shutting down
-#if ENGINE_MAJOR_VERSION > 4 || ENGINE_MINOR_VERSION >= 24
-			if (IsEngineExitRequested())
-#else
-			if (GIsRequestingExit)
-#endif
+			if (IsInGameThread())
 			{
-				if (!LuaState->IsValidLowLevel())
+				// a: Ordinary client/startup values retain the existing direct release path; startup ownership transfer excludes overlapping GameThread VM calls and destruction.
+				ULuaState* GameThreadState = LuaState.Get();
+				if (!GameThreadState)
 				{
 					LuaRef = LUA_NOREF;
 					return;
 				}
+				if (!GameThreadState->UsesLuaOwnerThread())
+				{
+					GameThreadState->UnrefChecked(LuaRef);
+					LuaRef = LUA_NOREF;
+					return;
+				}
 			}
-			// use UnrefCheck here to support moving of LuaState
-			LuaState->UnrefChecked(LuaRef);
+			// special case for when the engine is shutting down
+			// a: Pin validates the existing weak serial under Unreal GC synchronization and keeps the state-owned release queue alive during a destructor on another thread.
+			TStrongObjectPtr<ULuaState> PinnedLuaState = LuaState.Pin();
+			if (PinnedLuaState)
+			{
+				// use UnrefCheck here to support moving of LuaState
+				PinnedLuaState->UnrefChecked(LuaRef);
+			}
 		}
 		LuaRef = LUA_NOREF;
 	}

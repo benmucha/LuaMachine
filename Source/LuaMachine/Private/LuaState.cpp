@@ -18,12 +18,15 @@
 #include "Runtime/Core/Public/Misc/Paths.h"
 #include "Runtime/Core/Public/Serialization/BufferArchive.h"
 #include "Runtime/CoreUObject/Public/UObject/TextProperty.h"
+#include "Misc/ScopeLock.h"
+#include "HAL/PlatformTLS.h"
 
 LUAMACHINE_API DEFINE_LOG_CATEGORY(LogLuaMachine);
 
 // My copy to have the err func for errs with stacktrace.
 bool ULuaState::MyPCall(int NArgs, FLuaValue & Value, int errFuncIdx, int NRet)
 {
+	CheckLuaOwnerThread();
 	// --- preflight: ensure we're calling a function ---
 	const int funcIndex = lua_gettop(L) - NArgs;
 	if (lua_type(L, funcIndex) != LUA_TFUNCTION)
@@ -65,6 +68,7 @@ bool ULuaState::MyPCall(int NArgs, FLuaValue & Value, int errFuncIdx, int NRet)
 /** I copied and changed to add err logs with stacktrace. Actually works e.g. if there's an error in WogenFirst.lua. */
 bool ULuaState::MyCall(int NArgs, FLuaValue& Value, int errFuncIdx, int NRet)
 {
+	CheckLuaOwnerThread();
 	if (lua_pcall(L, NArgs, NRet, errFuncIdx) != LUA_OK)
 	{
 		const char* err = lua_tostring(L, -1);
@@ -106,7 +110,70 @@ ULuaState::ULuaState()
 	bEnableCountHook = false;
 	bRawLuaFunctionCall = false;
 
-	FCoreUObjectDelegates::GetPostGarbageCollect().AddUObject(this, &ULuaState::GCLuaDelegatesCheck);
+	GCLuaDelegatesHandle = FCoreUObjectDelegates::GetPostGarbageCollect().AddUObject(this, &ULuaState::GCLuaDelegatesCheck);
+}
+
+// a: Transfer an initialized or unopened VM only after startup has stopped entering it; no later transfer or reuse of the closed shell is permitted.
+void ULuaState::ConfigureLuaOwnerThread(uint32 InOwnerThreadId)
+{
+	checkf(LuaOwnerThreadId.Load() == 0 && !bOwnedLuaStateClosed, TEXT("Lua VM ownership can only be configured once"));
+	checkf(InOwnerThreadId != 0 && InOwnerThreadId == FPlatformTLS::GetCurrentThreadId(), TEXT("Lua VM ownership must be adopted by its executing thread"));
+	checkf(InceptionLevel == 0 && ActiveLuaThreadState == nullptr, TEXT("Lua VM ownership requires a quiescent startup handoff"));
+	// a: A post-GC callback may already be finishing the former unowned map cleanup after GC releases its global lock; publish ownership only after that callback exits.
+	FScopeLock Lock(&DeferredLuaReferencesLock);
+	LuaOwnerThreadId.Store(InOwnerThreadId);
+}
+
+// a: Only configured server states add this contract; existing client/editor states retain their current lifecycle.
+bool ULuaState::IsLuaOwnerThread() const
+{
+	return LuaOwnerThreadId.Load() == FPlatformTLS::GetCurrentThreadId();
+}
+
+// a: All live VM entry and registry reads stay on the configured owner; deferred destruction is routed separately by UnrefChecked.
+void ULuaState::CheckLuaOwnerThread() const
+{
+	checkf(!UsesLuaOwnerThread() || IsLuaOwnerThread(), TEXT("Lua VM access occurred outside its owning thread"));
+	checkf(!bOwnedLuaStateClosed, TEXT("Lua VM access occurred after explicit owner closure"));
+}
+
+// a: The owner consumes numeric release requests while its VM is protected by the enclosing server GC scope; Unreal post-GC cleanup uses the same boundary.
+void ULuaState::DrainDeferredLuaReferences()
+{
+	CheckLuaOwnerThread();
+	checkf(UsesLuaOwnerThread(), TEXT("Deferred Lua reference drain requires an owning thread"));
+	int32 Ref;
+	while (DeferredLuaReferences.Dequeue(Ref))
+	{
+		Unref(Ref);
+	}
+	if (bDeferredLuaDelegateGcCheck.Exchange(false))
+	{
+		GCLuaDelegatesCheck();
+	}
+}
+
+// a: Stop accepting deferred ids before draining them, then release the entire registry on its owner; late native destructors never enter the closed VM.
+void ULuaState::CloseOwnedLuaState()
+{
+	CheckLuaOwnerThread();
+	checkf(UsesLuaOwnerThread(), TEXT("Explicit owner closure requires an owning thread"));
+	checkf(InceptionLevel == 0 && ActiveLuaThreadState == nullptr, TEXT("Lua VM cannot close during an active callback"));
+	{
+		FScopeLock Lock(&DeferredLuaReferencesLock);
+		bAcceptsDeferredLuaReferences = false;
+	}
+	DrainDeferredLuaReferences();
+	LuaSmartReferences.Empty();
+	LuaDelegatesMap.Empty();
+	Table.Empty();
+	if (L)
+	{
+		lua_close(L);
+		L = nullptr;
+	}
+	bOwnedLuaStateClosed = true;
+	TrackedLuaUserDataObjects.Empty();
 }
 
 
@@ -176,6 +243,8 @@ void ULuaState::OnProfile(lua_State* L, int gc)
 
 FLuaValue ULuaState::RequireLuaBlueprintPackage(const FString& Name, TSubclassOf<ULuaBlueprintPackage> LuaBlueprintPackage)
 {
+	CheckLuaOwnerThread();
+	checkf(!UsesLuaOwnerThread() || !LuaBlueprintPackage->HasAnyClassFlags(CLASS_CompiledFromBlueprint), TEXT("Owned Lua packages must use a native class"));
 	ULuaBlueprintPackage* LuaBlueprintPackageInstance = NewObject<ULuaBlueprintPackage>(this, LuaBlueprintPackage);
 	if (LuaBlueprintPackageInstance)
 	{
@@ -185,6 +254,11 @@ FLuaValue ULuaState::RequireLuaBlueprintPackage(const FString& Name, TSubclassOf
 		NewTable();
 		// this avoid the package to be GC'd
 		LuaBlueprintPackages.Add(Name, LuaBlueprintPackageInstance);
+		if (UsesLuaOwnerThread())
+		{
+			// a: The reflected package map now pins this worker-created instance under the caller's GC exclusion scope.
+			LuaBlueprintPackageInstance->AtomicallyClearInternalFlags(EInternalObjectFlags::Async);
+		}
 		LuaBlueprintPackageInstance->SelfTable = ToLuaValue(-1);
 		LuaBlueprintPackageInstance->Init();
 		LuaBlueprintPackageInstance->ReceiveInit();
@@ -205,6 +279,7 @@ FLuaValue ULuaState::RequireLuaBlueprintPackage(const FString& Name, TSubclassOf
 
 ULuaState* ULuaState::GetLuaState(UWorld* InWorld)
 {
+	CheckLuaOwnerThread();
 	CurrentWorld = InWorld;
 
 	if (L != nullptr)
@@ -500,6 +575,7 @@ ULuaState* ULuaState::GetLuaState(UWorld* InWorld)
 
 FLuaValue ULuaState::GetLuaBlueprintPackageTable(const FString& PackageName)
 {
+	CheckLuaOwnerThread();
 	if (!LuaBlueprintPackages.Contains(PackageName))
 	{
 		return FLuaValue();
@@ -510,6 +586,7 @@ FLuaValue ULuaState::GetLuaBlueprintPackageTable(const FString& PackageName)
 
 int32 ULuaState::LuaValueLength(FLuaValue LuaValue)
 {
+	CheckLuaOwnerThread();
 	FromLuaValue(LuaValue);
 	Len(-1);
 	const int32 Length = ToInteger(-1);
@@ -520,6 +597,7 @@ int32 ULuaState::LuaValueLength(FLuaValue LuaValue)
 
 void ULuaState::SetSingleStep(const bool bEnable)
 {
+	CheckLuaOwnerThread();
 #if LUAMACHINE_LUAU
 	lua_singlestep(L, bEnable ? 1 : 0);
 #endif
@@ -527,6 +605,7 @@ void ULuaState::SetSingleStep(const bool bEnable)
 
 bool ULuaState::RunCodeAsset(ULuaCode* CodeAsset, int NRet)
 {
+	CheckLuaOwnerThread();
 	if (CodeAsset->bCooked && CodeAsset->bCookAsBytecode)
 	{
 #if PLATFORM_ANDROID
@@ -542,6 +621,7 @@ bool ULuaState::RunCodeAsset(ULuaCode* CodeAsset, int NRet)
 
 bool ULuaState::RunFile(const FString& Filename, bool bIgnoreNonExistent, int NRet, bool bNonContentDirectory)
 {
+	CheckLuaOwnerThread();
 	TArray<uint8> Code;
 	FString AbsoluteFilename = FPaths::Combine(FPaths::ProjectContentDir(), Filename);
 
@@ -577,6 +657,7 @@ bool ULuaState::RunFile(const FString& Filename, bool bIgnoreNonExistent, int NR
 
 bool ULuaState::RunCode(const FString& Code, const FString& CodePath, int NRet)
 {
+	CheckLuaOwnerThread();
 	TArray<uint8> Bytes;
 	Bytes.Append((uint8*)TCHAR_TO_UTF8(*Code), FCStringAnsi::Strlen(TCHAR_TO_UTF8(*Code)));
 	return RunCode(Bytes, CodePath, NRet);
@@ -584,6 +665,7 @@ bool ULuaState::RunCode(const FString& Code, const FString& CodePath, int NRet)
 
 bool ULuaState::RunCode(const TArray<uint8>& Code, const FString& CodePath, int NRet)
 {
+	CheckLuaOwnerThread();
 	FString FullCodePath = FString("@") + CodePath;
 
 #if LUAMACHINE_LUA53 || LUAMACHINE_LUAJIT
@@ -675,6 +757,12 @@ TArray<uint8> ULuaState::ToByteCode(const FString& Code, const FString& CodePath
 
 void ULuaState::FromLuaValue(FLuaValue& LuaValue, UObject* CallContext, lua_State* State)
 {
+	CheckLuaOwnerThread();
+	if (UsesLuaOwnerThread() && LuaValue.LuaRef != LUA_NOREF)
+	{
+		// a: A registry id identifies only this exact VM; owned execution must never silently convert another VM's table, function or coroutine to nil.
+		checkf(LuaValue.LuaState == this, TEXT("Owned Lua VM received a registry reference from another state"));
+	}
 	if (!State)
 	{
 		State = this->L;
@@ -885,6 +973,7 @@ void ULuaState::FromLuaValue(FLuaValue& LuaValue, UObject* CallContext, lua_Stat
 
 FLuaValue ULuaState::ToLuaValue(int Index, lua_State* State)
 {
+	CheckLuaOwnerThread();
 	if (!State)
 	{
 		State = this->L;
@@ -983,6 +1072,7 @@ FLuaValue ULuaState::ToLuaValue(int Index, lua_State* State)
 
 int32 ULuaState::GetTop()
 {
+	CheckLuaOwnerThread();
 	return lua_gettop(L);
 }
 
@@ -1199,6 +1289,7 @@ int ULuaState::MetaTableFunctionUserDataInterface__gc(lua_State* L)
 
 FLuaDebug ULuaState::LuaGetInfo(int32 Level)
 {
+	CheckLuaOwnerThread();
 	lua_Debug ar;
 	FLuaDebug LuaDebug;
 #if LUAMACHINE_LUA53 || LUAMACHINE_LUAJIT
@@ -1228,6 +1319,7 @@ FLuaDebug ULuaState::LuaGetInfo(int32 Level)
 
 TMap<FString, FLuaValue> ULuaState::LuaGetLocals(int32 Level)
 {
+	CheckLuaOwnerThread();
 #if LUAMACHINE_LUA53 || LUAMACHINE_LUAJIT
 	TMap<FString, FLuaValue> ReturnValue;
 
@@ -1383,6 +1475,11 @@ int ULuaState::MetaTableFunction__call(lua_State* L)
 	int NArgs = lua_gettop(L);
 
 	UObject* CallScope = LuaCallContext->Context.Get();
+	if (LuaState->UsesLuaOwnerThread())
+	{
+		// a: Owned simulation VMs retain native reflection dispatch, but arbitrary Blueprint and network dispatch belong to GameThread services.
+		checkf(LuaCallContext->Function->HasAnyFunctionFlags(FUNC_Native) && !LuaCallContext->Function->HasAnyFunctionFlags(FUNC_Net) && LuaCallContext->Function->Script.Num() == 0 && !CallScope->GetClass()->HasAnyClassFlags(CLASS_CompiledFromBlueprint), TEXT("Owned Lua binding requires a native local function"));
+	}
 	bool bImplicitSelf = false;
 	int StackPointer = 2;
 
@@ -1625,6 +1722,11 @@ int ULuaState::MetaTableFunction__rawcall(lua_State* L)
 	int NArgs = lua_gettop(L);
 
 	UObject* CallScope = LuaCallContext->Context.Get();
+	if (LuaState->UsesLuaOwnerThread())
+	{
+		// a: Raw parameter conversion uses the same native-only target contract as ordinary owned Lua bindings.
+		checkf(LuaCallContext->Function->HasAnyFunctionFlags(FUNC_Native) && !LuaCallContext->Function->HasAnyFunctionFlags(FUNC_Net) && LuaCallContext->Function->Script.Num() == 0 && !CallScope->GetClass()->HasAnyClassFlags(CLASS_CompiledFromBlueprint), TEXT("Owned raw Lua binding requires a native local function"));
+	}
 	bool bImplicitSelf = false;
 	int StackPointer = 2;
 
@@ -2061,51 +2163,61 @@ void ULuaState::ReceiveLuaSingleStepHook_Implementation(const FLuaDebug& LuaDebu
 
 void ULuaState::NewTable()
 {
+	CheckLuaOwnerThread();
 	lua_newtable(L);
 }
 
 void ULuaState::SetMetaTable(int Index)
 {
+	CheckLuaOwnerThread();
 	lua_setmetatable(L, Index);
 }
 
 void ULuaState::GetMetaTable(int Index)
 {
+	CheckLuaOwnerThread();
 	lua_getmetatable(L, Index);
 }
 
 void ULuaState::SetField(int Index, const char* FieldName)
 {
+	CheckLuaOwnerThread();
 	lua_setfield(L, Index, FieldName);
 }
 
 void ULuaState::GetField(int Index, const char* FieldName)
 {
+	CheckLuaOwnerThread();
 	lua_getfield(L, Index, FieldName);
 }
 
 void ULuaState::RawGetI(int Index, int N)
 {
+	CheckLuaOwnerThread();
 	lua_rawgeti(L, Index, N);
 }
 
 void ULuaState::RawSetI(int Index, int N)
 {
+	CheckLuaOwnerThread();
 	lua_rawseti(L, Index, N);
 }
 
 void ULuaState::PushGlobalTable()
 {
+	CheckLuaOwnerThread();
 	lua_pushglobaltable(L);
 }
 
 void ULuaState::PushRegistryTable()
 {
+	CheckLuaOwnerThread();
 	lua_pushvalue(L, LUA_REGISTRYINDEX);
 }
 
 int32 ULuaState::GetFieldFromTree(const FString& Tree, bool bGlobal)
 {
+	CheckLuaOwnerThread();
 	TArray<FString> Parts;
 	Tree.ParseIntoArray(Parts, TEXT("."));
 	if (Parts.Num() == 0)
@@ -2148,6 +2260,7 @@ int32 ULuaState::GetFieldFromTree(const FString& Tree, bool bGlobal)
 
 void ULuaState::SetFieldFromTree(const FString& Tree, FLuaValue& Value, bool bGlobal, UObject* CallContext)
 {
+	CheckLuaOwnerThread();
 	TArray<FString> Parts;
 	Tree.ParseIntoArray(Parts, TEXT("."));
 
@@ -2168,6 +2281,7 @@ void ULuaState::SetFieldFromTree(const FString& Tree, FLuaValue& Value, bool bGl
 
 void ULuaState::NewUObject(UObject* Object, lua_State* State)
 {
+	CheckLuaOwnerThread();
 	if (!State)
 	{
 		State = this->L;
@@ -2180,22 +2294,26 @@ void ULuaState::NewUObject(UObject* Object, lua_State* State)
 
 void ULuaState::GetGlobal(const char* Name)
 {
+	CheckLuaOwnerThread();
 	lua_getglobal(L, Name);
 }
 
 void ULuaState::SetGlobal(const char* Name)
 {
+	CheckLuaOwnerThread();
 	lua_setglobal(L, Name);
 }
 
 void ULuaState::PushValue(int Index)
 {
+	CheckLuaOwnerThread();
 	lua_pushvalue(L, Index);
 }
 
 // DONT use this - use my custom funcs for err stacktraces.
 bool ULuaState::PCall(int NArgs, FLuaValue& Value, int NRet)
 {
+	CheckLuaOwnerThread();
 	bool bSuccess = Call(NArgs, Value, NRet);
 	if (!bSuccess)
 	{
@@ -2215,6 +2333,7 @@ bool ULuaState::PCall(int NArgs, FLuaValue& Value, int NRet)
 // DONT use this - use my custom funcs for err stacktraces.
 bool ULuaState::Call(int NArgs, FLuaValue& Value, int NRet)
 {
+	CheckLuaOwnerThread();
 	if (lua_pcall(L, NArgs, NRet, 0))
 	{
 		LastError = FString::Printf(TEXT("Lua error: %s"), ANSI_TO_TCHAR(lua_tostring(L, -1)));
@@ -2230,55 +2349,83 @@ bool ULuaState::Call(int NArgs, FLuaValue& Value, int NRet)
 
 void ULuaState::Pop(int32 Amount)
 {
+	CheckLuaOwnerThread();
 	lua_pop(L, Amount);
 }
 
 void ULuaState::PushNil()
 {
+	CheckLuaOwnerThread();
 	lua_pushnil(L);
 }
 
 void ULuaState::PushCFunction(lua_CFunction Function)
 {
+	CheckLuaOwnerThread();
 	lua_pushcfunction(L, Function);
 }
 
 void* ULuaState::NewUserData(size_t DataSize)
 {
+	CheckLuaOwnerThread();
 	return lua_newuserdata(L, DataSize);
 }
 
 void ULuaState::Unref(int Ref)
 {
+	CheckLuaOwnerThread();
 	luaL_unref(L, LUA_REGISTRYINDEX, Ref);
 }
 
 void ULuaState::UnrefChecked(int Ref)
 {
-	// in case of moved value (like when compiling a blueprint), L should be nullptr
-	if (!L)
+	if (!UsesLuaOwnerThread())
+	{
+		// a: The quiescent startup handoff excludes concurrent legacy VM calls and reference destruction, preserving the ordinary client release without an admission mutex.
+		// in case of moved value (like when compiling a blueprint), L should be nullptr
+		if (L)
+		{
+			Unref(Ref);
+		}
 		return;
-
-	Unref(Ref);
+	}
+	if (IsLuaOwnerThread())
+	{
+		if (!bOwnedLuaStateClosed && L)
+		{
+			Unref(Ref);
+		}
+		return;
+	}
+	// a: Pin keeps this configured shell alive; serialize off-owner release admission against its final registry closure.
+	FScopeLock Lock(&DeferredLuaReferencesLock);
+	if (bAcceptsDeferredLuaReferences)
+	{
+		DeferredLuaReferences.Enqueue(Ref);
+	}
 }
 
 int ULuaState::NewRef()
 {
+	CheckLuaOwnerThread();
 	return luaL_ref(L, LUA_REGISTRYINDEX);
 }
 
 void ULuaState::GetRef(int Ref)
 {
+	CheckLuaOwnerThread();
 	lua_rawgeti(L, LUA_REGISTRYINDEX, Ref);
 }
 
 int ULuaState::Next(int Index)
 {
+	CheckLuaOwnerThread();
 	return lua_next(L, Index);
 }
 
 bool ULuaState::Yield(int Index, int NArgs)
 {
+	CheckLuaOwnerThread();
 	lua_State* Coroutine = lua_tothread(L, Index);
 	if (!Coroutine)
 		return false;
@@ -2309,6 +2456,7 @@ bool ULuaState::Yield(int Index, int NArgs)
 
 bool ULuaState::Resume(int Index, int NArgs)
 {
+	CheckLuaOwnerThread();
 	lua_State* Coroutine = lua_tothread(L, Index);
 	if (!Coroutine)
 	{
@@ -2343,6 +2491,7 @@ bool ULuaState::Resume(int Index, int NArgs)
 
 TArray<FLuaValue> ULuaState::LuaValueResume(FLuaValue LuaValue, TArray<FLuaValue> Args)
 {
+	CheckLuaOwnerThread();
 	TArray<FLuaValue> ReturnValue;
 
 	if (LuaValue.Type != ELuaValueType::Thread)
@@ -2385,26 +2534,31 @@ TArray<FLuaValue> ULuaState::LuaValueResume(FLuaValue LuaValue, TArray<FLuaValue
 
 int ULuaState::GC(int What, int Data)
 {
+	CheckLuaOwnerThread();
 	return lua_gc(L, What, Data);
 }
 
 void ULuaState::Len(int Index)
 {
+	CheckLuaOwnerThread();
 	lua_len(L, Index);
 }
 
 int32 ULuaState::ILen(int Index)
 {
+	CheckLuaOwnerThread();
 	return luaL_len(L, Index);
 }
 
 int32 ULuaState::ToInteger(int Index)
 {
+	CheckLuaOwnerThread();
 	return lua_tointeger(L, Index);
 }
 
 FLuaValue ULuaState::CreateLuaTable()
 {
+	CheckLuaOwnerThread();
 	FLuaValue NewTable;
 	NewTable.Type = ELuaValueType::Table;
 	NewTable.LuaState = this;
@@ -2415,6 +2569,7 @@ FLuaValue ULuaState::CreateLuaTable()
 
 FLuaValue ULuaState::CreateLuaLazyTable()
 {
+	CheckLuaOwnerThread();
 	FLuaValue NewTable;
 	NewTable.Type = ELuaValueType::Table;
 	NewTable.LuaState = this;
@@ -2423,6 +2578,7 @@ FLuaValue ULuaState::CreateLuaLazyTable()
 
 FLuaValue ULuaState::CreateLuaThread(FLuaValue Value)
 {
+	CheckLuaOwnerThread();
 	FLuaValue NewThread;
 	NewThread.Type = ELuaValueType::Thread;
 	NewThread.LuaState = this;
@@ -2435,6 +2591,7 @@ FLuaValue ULuaState::CreateLuaThread(FLuaValue Value)
 
 ELuaThreadStatus ULuaState::GetLuaThreadStatus(FLuaValue Value)
 {
+	CheckLuaOwnerThread();
 	if (Value.Type != ELuaValueType::Thread || Value.LuaState != this)
 		return ELuaThreadStatus::Invalid;
 
@@ -2454,6 +2611,7 @@ ELuaThreadStatus ULuaState::GetLuaThreadStatus(FLuaValue Value)
 
 int32 ULuaState::GetLuaThreadStackTop(FLuaValue Value)
 {
+	CheckLuaOwnerThread();
 	if (Value.Type != ELuaValueType::Thread || Value.LuaState != this)
 		return MIN_int32;
 
@@ -2467,6 +2625,7 @@ int32 ULuaState::GetLuaThreadStackTop(FLuaValue Value)
 
 TSharedRef<FLuaSmartReference> ULuaState::AddLuaSmartReference(FLuaValue Value)
 {
+	CheckLuaOwnerThread();
 	TSharedRef<FLuaSmartReference> Ref = MakeShared<FLuaSmartReference>();
 	Ref->LuaState = this;
 	Ref->Value = Value;
@@ -2478,11 +2637,13 @@ TSharedRef<FLuaSmartReference> ULuaState::AddLuaSmartReference(FLuaValue Value)
 
 void ULuaState::RemoveLuaSmartReference(TSharedRef<FLuaSmartReference> Ref)
 {
+	CheckLuaOwnerThread();
 	LuaSmartReferences.Remove(Ref);
 }
 
 ULuaState::~ULuaState()
 {
+	checkf(!UsesLuaOwnerThread() || (bOwnedLuaStateClosed && L == nullptr), TEXT("An owned Lua VM must be explicitly closed before its UObject is destroyed"));
 	FCoreUObjectDelegates::GetPostGarbageCollect().Remove(GCLuaDelegatesHandle);
 
 #if WITH_EDITOR
@@ -2559,6 +2720,7 @@ FLuaValue ULuaState::FromFProperty(void* Buffer, FProperty* Property, bool& bSuc
 FLuaValue ULuaState::FromUProperty(void* Buffer, UProperty * Property, bool& bSuccess, int32 Index)
 #endif
 {
+	CheckLuaOwnerThread();
 	bSuccess = true;
 
 	LUAVALUE_PROP_CAST(BoolProperty, bool);
@@ -2717,6 +2879,7 @@ FLuaValue ULuaState::FromUProperty(void* Buffer, UProperty * Property, bool& bSu
 
 FLuaValue ULuaState::StructToLuaTable(UScriptStruct* InScriptStruct, const uint8* StructData)
 {
+	CheckLuaOwnerThread();
 	FLuaValue NewLuaTable = CreateLuaTable();
 #if ENGINE_MAJOR_VERSION > 4 || ENGINE_MINOR_VERSION >= 25
 	for (TFieldIterator<FProperty> It(InScriptStruct); It; ++It)
@@ -2738,6 +2901,7 @@ FLuaValue ULuaState::StructToLuaTable(UScriptStruct* InScriptStruct, const uint8
 
 FLuaValue ULuaState::StructToLuaTable(UScriptStruct* InScriptStruct, const TArray<uint8>& StructData)
 {
+	CheckLuaOwnerThread();
 	return StructToLuaTable(InScriptStruct, StructData.GetData());
 }
 
@@ -2747,6 +2911,7 @@ void ULuaState::ToFProperty(void* Buffer, FProperty* Property, FLuaValue Value, 
 void ULuaState::ToUProperty(void* Buffer, UProperty * Property, FLuaValue Value, bool& bSuccess, int32 Index)
 #endif
 {
+	CheckLuaOwnerThread();
 	bSuccess = true;
 
 	LUAVALUE_PROP_SET(BoolProperty, Value.ToBool());
@@ -2818,6 +2983,11 @@ void ULuaState::ToUProperty(void* Buffer, UProperty * Property, FLuaValue Value,
 		ULuaDelegate* LuaDelegate = NewObject<ULuaDelegate>();
 		LuaDelegate->SetupLuaDelegate(MulticastProperty->SignatureFunction, this, Value);
 		RegisterLuaDelegate((UObject*)Buffer, LuaDelegate);
+		if (UsesLuaOwnerThread())
+		{
+			// a: The reflected delegate map now owns this exact new worker object under the caller's GC exclusion scope.
+			LuaDelegate->AtomicallyClearInternalFlags(EInternalObjectFlags::Async);
+		}
 
 		FScriptDelegate Delegate;
 		Delegate.BindUFunction(LuaDelegate, FName("LuaDelegateFunction"));
@@ -2843,6 +3013,11 @@ void ULuaState::ToUProperty(void* Buffer, UProperty * Property, FLuaValue Value,
 		ULuaDelegate* LuaDelegate = NewObject<ULuaDelegate>();
 		LuaDelegate->SetupLuaDelegate(DelegateProperty->SignatureFunction, this, Value);
 		RegisterLuaDelegate((UObject*)Buffer, LuaDelegate);
+		if (UsesLuaOwnerThread())
+		{
+			// a: The reflected delegate map now owns this exact new worker object under the caller's GC exclusion scope.
+			LuaDelegate->AtomicallyClearInternalFlags(EInternalObjectFlags::Async);
+		}
 
 		FScriptDelegate Delegate;
 		Delegate.BindUFunction(LuaDelegate, FName("LuaDelegateFunction"));
@@ -2934,6 +3109,7 @@ void ULuaState::ToUProperty(void* Buffer, UProperty * Property, FLuaValue Value,
 
 void ULuaState::LuaTableToStruct(FLuaValue& LuaValue, UScriptStruct* InScriptStruct, uint8* StructData)
 {
+	CheckLuaOwnerThread();
 	TArray<FLuaValue> TableKeys = ULuaBlueprintFunctionLibrary::LuaTableGetKeys(LuaValue);
 	for (FLuaValue TableKey : TableKeys)
 	{
@@ -2953,20 +3129,24 @@ void ULuaState::LuaTableToStruct(FLuaValue& LuaValue, UScriptStruct* InScriptStr
 #if ENGINE_MAJOR_VERSION > 4 || ENGINE_MINOR_VERSION >= 25
 void ULuaState::ToProperty(void* Buffer, FProperty* Property, FLuaValue Value, bool& bSuccess, int32 Index)
 {
+	CheckLuaOwnerThread();
 	ToFProperty(Buffer, Property, Value, bSuccess, Index);
 }
 
 FLuaValue ULuaState::FromProperty(void* Buffer, FProperty* Property, bool& bSuccess, int32 Index)
 {
+	CheckLuaOwnerThread();
 	return FromFProperty(Buffer, Property, bSuccess, Index);
 }
 #else
 void ULuaState::ToProperty(void* Buffer, UProperty * Property, FLuaValue Value, bool& bSuccess, int32 Index)
 {
+	CheckLuaOwnerThread();
 	ToUProperty(Buffer, Property, Value, bSuccess, Index);
 }
 FLuaValue ULuaState::FromProperty(void* Buffer, UProperty * Property, bool& bSuccess, int32 Index)
 {
+	CheckLuaOwnerThread();
 	return FromUProperty(Buffer, Property, bSuccess, Index);
 }
 #endif
@@ -2974,6 +3154,7 @@ FLuaValue ULuaState::FromProperty(void* Buffer, UProperty * Property, bool& bSuc
 
 FLuaValue ULuaState::GetLuaValueFromProperty(UObject* InObject, const FString& PropertyName)
 {
+	CheckLuaOwnerThread();
 	if (!InObject)
 	{
 		return FLuaValue();
@@ -2997,6 +3178,7 @@ FLuaValue ULuaState::GetLuaValueFromProperty(UObject* InObject, const FString& P
 
 bool ULuaState::SetPropertyFromLuaValue(UObject* InObject, const FString& PropertyName, FLuaValue Value)
 {
+	CheckLuaOwnerThread();
 	if (!InObject)
 	{
 		return false;
@@ -3021,11 +3203,13 @@ bool ULuaState::SetPropertyFromLuaValue(UObject* InObject, const FString& Proper
 
 void ULuaState::SetUserDataMetaTable(FLuaValue MetaTable)
 {
+	CheckLuaOwnerThread();
 	UserDataMetaTable = MetaTable;
 }
 
 void ULuaState::SetupAndAssignUserDataMetatable(UObject* Context, TMap<FString, FLuaValue>& Metatable, lua_State* State)
 {
+	CheckLuaOwnerThread();
 	if (!State)
 	{
 		State = this->L;
@@ -3088,6 +3272,7 @@ void ULuaState::SetupAndAssignUserDataMetatable(UObject* Context, TMap<FString, 
 
 void ULuaState::SetupAndAssignUserDataInterfaceMetatable(ILuaUserDataInterface* LuaUserDataInterface, lua_State* State)
 {
+	CheckLuaOwnerThread();
 	if (!State)
 	{
 		State = this->L;
@@ -3110,6 +3295,9 @@ void ULuaState::SetupAndAssignUserDataInterfaceMetatable(ILuaUserDataInterface* 
 
 FLuaValue ULuaState::NewLuaUserDataObject(TSubclassOf<ULuaUserDataObject> LuaUserDataObjectClass, bool bTrackObject)
 {
+	CheckLuaOwnerThread();
+	checkf(!UsesLuaOwnerThread() || bTrackObject, TEXT("Owned Lua userdata requires a tracked UObject lifetime"));
+	checkf(!UsesLuaOwnerThread() || !LuaUserDataObjectClass->HasAnyClassFlags(CLASS_CompiledFromBlueprint), TEXT("Owned Lua userdata must use a native class"));
 	ULuaUserDataObject* LuaUserDataObject = NewObject<ULuaUserDataObject>(this, LuaUserDataObjectClass);
 	if (LuaUserDataObject)
 	{
@@ -3118,6 +3306,11 @@ FLuaValue ULuaState::NewLuaUserDataObject(TSubclassOf<ULuaUserDataObject> LuaUse
 			TrackedLuaUserDataObjects.Add(LuaUserDataObject);
 		}
 		LuaUserDataObject->ReceiveLuaUserDataTableInit();
+		if (UsesLuaOwnerThread())
+		{
+			// a: The caller excludes Unreal GC and the tracked array already owns this new object, so the worker allocation's temporary Async pin must not outlive construction.
+			LuaUserDataObject->AtomicallyClearInternalFlags(EInternalObjectFlags::Async);
+		}
 		return FLuaValue(LuaUserDataObject);
 	}
 
@@ -3126,6 +3319,7 @@ FLuaValue ULuaState::NewLuaUserDataObject(TSubclassOf<ULuaUserDataObject> LuaUse
 
 void ULuaState::SetLuaUserDataField(FLuaValue UserData, const FString& Key, FLuaValue Value)
 {
+	CheckLuaOwnerThread();
 	if (UserData.Type != ELuaValueType::UObject || !UserData.Object)
 		return;
 
@@ -3144,6 +3338,7 @@ void ULuaState::SetLuaUserDataField(FLuaValue UserData, const FString& Key, FLua
 
 FLuaValue ULuaState::GetLuaUserDataField(FLuaValue UserData, const FString& Key)
 {
+	CheckLuaOwnerThread();
 	if (UserData.Type != ELuaValueType::UObject || !UserData.Object)
 		return FLuaValue();
 
@@ -3162,6 +3357,7 @@ FLuaValue ULuaState::GetLuaUserDataField(FLuaValue UserData, const FString& Key)
 
 const void* ULuaState::ToPointer(int Index)
 {
+	CheckLuaOwnerThread();
 	return lua_topointer(L, Index);
 }
 
@@ -3171,6 +3367,14 @@ void ULuaState::LuaStateInit()
 
 void ULuaState::GCLuaDelegatesCheck()
 {
+	// a: Serialize the one-time ownership handoff with any callback that entered while this state still used the startup thread.
+	FScopeLock Lock(&DeferredLuaReferencesLock);
+	if (UsesLuaOwnerThread() && !IsLuaOwnerThread())
+	{
+		// a: Unreal post-GC callbacks request cleanup without reading the owner's reflected delegate map.
+		bDeferredLuaDelegateGcCheck.Store(true);
+		return;
+	}
 	TSet<TWeakObjectPtr<UObject>> DeadObjects;
 	for (TPair<TWeakObjectPtr<UObject>, FLuaDelegateGroup>& Pair : LuaDelegatesMap)
 	{
@@ -3188,6 +3392,7 @@ void ULuaState::GCLuaDelegatesCheck()
 
 void ULuaState::RegisterLuaDelegate(UObject* InObject, ULuaDelegate* InLuaDelegate)
 {
+	CheckLuaOwnerThread();
 	FLuaDelegateGroup* LuaDelegateGroup = LuaDelegatesMap.Find(InObject);
 	if (LuaDelegateGroup)
 	{
@@ -3203,11 +3408,13 @@ void ULuaState::RegisterLuaDelegate(UObject* InObject, ULuaDelegate* InLuaDelega
 
 void ULuaState::UnregisterLuaDelegatesOfObject(UObject* InObject)
 {
+	CheckLuaOwnerThread();
 	LuaDelegatesMap.Remove(InObject);
 }
 
 TArray<FString> ULuaState::GetPropertiesNames(UObject* InObject)
 {
+	CheckLuaOwnerThread();
 	TArray<FString> Names;
 
 	if (!InObject)
@@ -3235,6 +3442,7 @@ TArray<FString> ULuaState::GetPropertiesNames(UObject* InObject)
 
 TArray<FString> ULuaState::GetFunctionsNames(UObject* InObject)
 {
+	CheckLuaOwnerThread();
 	TArray<FString> Names;
 
 	if (!InObject)
@@ -3258,16 +3466,19 @@ TArray<FString> ULuaState::GetFunctionsNames(UObject* InObject)
 
 void ULuaState::AddLuaValueToLuaState(const FString& Name, FLuaValue LuaValue)
 {
+	CheckLuaOwnerThread();
 	SetFieldFromTree(Name, LuaValue, true);
 }
 
 void ULuaState::SetLuaValueFromGlobalName(const FString& Name, FLuaValue LuaValue)
 {
+	CheckLuaOwnerThread();
 	AddLuaValueToLuaState(Name, LuaValue);
 }
 
 void ULuaState::SetLuaTableReadonly(FLuaValue LuaValue, const bool bEnabled)
 {
+	CheckLuaOwnerThread();
 #if LUAMACHINE_LUAU
 	if (LuaValue.Type != ELuaValueType::Table)
 	{
@@ -3282,6 +3493,7 @@ void ULuaState::SetLuaTableReadonly(FLuaValue LuaValue, const bool bEnabled)
 
 void ULuaState::Sandbox()
 {
+	CheckLuaOwnerThread();
 #if LUAMACHINE_LUAU
 	luaL_sandbox(L);
 #else
@@ -3291,6 +3503,7 @@ void ULuaState::Sandbox()
 
 FLuaValue ULuaState::RunString(const FString& CodeString, FString CodePath)
 {
+	CheckLuaOwnerThread();
 	FLuaValue ReturnValue;
 	if (CodePath.IsEmpty())
 	{
@@ -3316,6 +3529,7 @@ FLuaValue ULuaState::RunString(const FString& CodeString, FString CodePath)
 
 TArray<FLuaValue> ULuaState::RunStringMulti(const FString& CodeString, FString CodePath)
 {
+	CheckLuaOwnerThread();
 	TArray<FLuaValue>
 		ReturnValue;
 	if (CodePath.IsEmpty())
@@ -3352,11 +3566,13 @@ TArray<FLuaValue> ULuaState::RunStringMulti(const FString& CodeString, FString C
 
 void ULuaState::Error(const FString& ErrorString)
 {
+	CheckLuaOwnerThread();
 	luaL_error(L, "%s", TCHAR_TO_UTF8(*ErrorString));
 }
 
 FLuaValue ULuaState::GetLuaValueFromGlobalName(const FString& GlobalName)
 {
+	CheckLuaOwnerThread();
 	const uint32 ItemsToPop = GetFieldFromTree(GlobalName);
 	FLuaValue ReturnValue = ToLuaValue(-1);
 	Pop(ItemsToPop);
@@ -3365,6 +3581,7 @@ FLuaValue ULuaState::GetLuaValueFromGlobalName(const FString& GlobalName)
 
 FLuaValue ULuaState::LuaValueCall(FLuaValue LuaValue, TArray<FLuaValue> Args)
 {
+	CheckLuaOwnerThread();
 	FLuaValue ReturnValue;
 
 	FromLuaValue(LuaValue);
@@ -3385,6 +3602,7 @@ FLuaValue ULuaState::LuaValueCall(FLuaValue LuaValue, TArray<FLuaValue> Args)
 
 TArray<FLuaValue> ULuaState::LuaValueCallMulti(FLuaValue LuaValue, TArray<FLuaValue> Args)
 {
+	CheckLuaOwnerThread();
 	TArray<FLuaValue> ReturnValue;
 
 	FromLuaValue(LuaValue);
@@ -3419,6 +3637,7 @@ TArray<FLuaValue> ULuaState::LuaValueCallMulti(FLuaValue LuaValue, TArray<FLuaVa
 
 void ULuaState::StartProfiler(const double Frequency)
 {
+	CheckLuaOwnerThread();
 #if LUAMACHINE_LUAU
 	lua_Callbacks* Callbacks = lua_callbacks(L);
 	// profiler is already running
@@ -3439,6 +3658,7 @@ void ULuaState::StartProfiler(const double Frequency)
 
 TMap<FLuaProfiledStack, FLuaProfiledData> ULuaState::StopProfiler()
 {
+	CheckLuaOwnerThread();
 	TMap<FLuaProfiledStack, FLuaProfiledData> ProfiledStacks = CurrentProfiledStacks;
 
 #if LUAMACHINE_LUAU

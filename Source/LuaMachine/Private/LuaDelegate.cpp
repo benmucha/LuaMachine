@@ -10,6 +10,7 @@ void ULuaDelegate::LuaDelegateFunction()
 
 void ULuaDelegate::SetupLuaDelegate(UFunction* InSignature, ULuaState* InLuaState, FLuaValue InLuaValue)
 {
+	InLuaState->CheckLuaOwnerThread();
 	LuaDelegateSignature = InSignature;
 	LuaState = InLuaState;
 	LuaValue = InLuaValue;
@@ -21,6 +22,8 @@ void ULuaDelegate::ProcessEvent(UFunction* Function, void* Parms)
 	{
 		return;
 	}
+	// a: Engine-origin server events must enter through copied owner messages before any reflected parameter is converted into a live Lua value.
+	LuaState->CheckLuaOwnerThread();
 
 	TArray<FLuaValue> LuaArgs;
 #if  ENGINE_MAJOR_VERSION > 4 ||ENGINE_MINOR_VERSION >= 25

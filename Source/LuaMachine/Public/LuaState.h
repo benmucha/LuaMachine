@@ -227,6 +227,19 @@ public:
 	ULuaState();
 	~ULuaState();
 
+	// a: Adopt this VM once at a quiescent startup handoff; the caller must exclude previous-thread VM entry and reference destruction until adoption finishes.
+	void ConfigureLuaOwnerThread(uint32 InOwnerThreadId);
+	// a: Assert VM access belongs to its configured owner and that explicit closure has not completed.
+	void CheckLuaOwnerThread() const;
+	// a: Unconfigured client/editor states retain their existing execution contract.
+	bool UsesLuaOwnerThread() const { return LuaOwnerThreadId.Load() != 0; }
+	// a: Compare the immutable configured owner with the executing thread without reading the VM.
+	bool IsLuaOwnerThread() const;
+	// a: Reclaim registry ids and post-Unreal-GC delegate entries at an owner dispatch boundary under the caller's FGCScopeGuard.
+	void DrainDeferredLuaReferences();
+	// a: Close the adopted VM once on its owner after gameplay shutdown; the caller holds FGCScopeGuard and keeps the shell strongly referenced until completion.
+	void CloseOwnedLuaState();
+
 	virtual UWorld* GetWorld() const override { return CurrentWorld; }
 
 	UPROPERTY(EditAnywhere, Category = "Lua")
@@ -499,6 +512,7 @@ public:
 	static ULuaState* GetFromExtraSpace(lua_State* L)
 	{
 		ULuaState** LuaExtraSpacePtr = (ULuaState**)lua_getextraspace(L);
+		(*LuaExtraSpacePtr)->CheckLuaOwnerThread();
 		return *LuaExtraSpacePtr;
 	}
 
@@ -519,9 +533,9 @@ public:
 
 	void SetUserDataMetaTable(FLuaValue MetaTable);
 
-	FORCEINLINE lua_State* GetInternalLuaState() const { return L; }
+	FORCEINLINE lua_State* GetInternalLuaState() const { CheckLuaOwnerThread(); return L; }
 	// a: Use currently executing Lua thread when available (e.g. coroutine.resume) so diagnostics can see caller frames.
-	FORCEINLINE lua_State* GetActiveLuaThreadState() const { return ActiveLuaThreadState ? ActiveLuaThreadState : L; }
+	FORCEINLINE lua_State* GetActiveLuaThreadState() const { CheckLuaOwnerThread(); return ActiveLuaThreadState ? ActiveLuaThreadState : L; }
 
 	void PushRegistryTable();
 
@@ -615,7 +629,7 @@ public:
 	int64 MaxMemoryUsage = 0;
 
 	UFUNCTION(BlueprintCallable, BlueprintPure, Category = "Lua")
-	int64 GetMemoryUsage() const { return CurrentMemoryUsage; }
+	int64 GetMemoryUsage() const { CheckLuaOwnerThread(); return CurrentMemoryUsage; }
 
 	UFUNCTION(BlueprintCallable, Category = "Lua")
 	void SetLuaTableReadonly(FLuaValue LuaValue, const bool bEnabled);
@@ -648,6 +662,16 @@ public:
 	TMap<FLuaProfiledStack, FLuaProfiledData> StopProfiler();
 
 protected:
+	// a: Assigned once before the new owner starts work; this shell never adopts another VM or owner after closure.
+	TAtomic<uint32> LuaOwnerThreadId{0};
+	// a: Serialize reference-release admission against final registry closure without holding this mutex while Lua or its finalizers execute.
+	FCriticalSection DeferredLuaReferencesLock;
+	TQueue<int32, EQueueMode::Mpsc> DeferredLuaReferences;
+	bool bAcceptsDeferredLuaReferences = true;
+	bool bOwnedLuaStateClosed = false;
+	// a: Unreal's post-GC delegate may run off-owner, so it requests map cleanup without touching Lua delegate containers.
+	TAtomic<bool> bDeferredLuaDelegateGcCheck{false};
+
 	lua_State* L;
 	// a: Temporarily set during Lua->UFunction dispatch; restored after ProcessEvent.
 	lua_State* ActiveLuaThreadState = nullptr;
